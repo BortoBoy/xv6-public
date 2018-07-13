@@ -7,6 +7,27 @@
 #include "proc.h"
 #include "spinlock.h"
 
+pte_t * walkpgdir(pde_t *pgdir, const void *va, int alloc)
+{
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  if(*pde & PTE_P){
+    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+  } else {
+    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
+      return 0;
+    // Make sure all those PTE_P bits are zero.
+    memset(pgtab, 0, PGSIZE);
+    // The permissions here are overly generous, but they can
+    // be further restricted by the permissions in the page table
+    // entries, if necessary.
+    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
+}
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -496,6 +517,48 @@ kill(int pid)
   return -1;
 }
 
+void task_1(pde_t *page_dir_pointer){
+  cprintf("%s","Page Table:\n");
+  cprintf("  Memory location of page directory = %p\n",page_dir_pointer);
+  uint dir_i=0;
+  uint table_i=0;
+  int ok;
+  for(;dir_i < NPDENTRIES;dir_i++){
+    if( ( page_dir_pointer[dir_i] & PTE_P) && (page_dir_pointer[dir_i]& PTE_U)  ){
+      pde_t* page_table_entries= (pde_t*) PTE_ADDR( P2V(page_dir_pointer[dir_i]) );
+      ok=0;
+      for(;table_i < NPTENTRIES;table_i++){
+        if (( page_table_entries[table_i] & PTE_P) && (page_table_entries[table_i]& PTE_U)){
+          if(!ok){
+            cprintf("  pdir PTE %d, %d :\n", dir_i , page_dir_pointer[dir_i]>>12 );
+            cprintf("  Memory location of page table = %p\n",PTE_ADDR( V2P((void*)page_table_entries)) );
+            ok=1;
+          }
+          pde_t* ppn=walkpgdir(page_dir_pointer,(void*)PGADDR(dir_i,table_i,0),0);
+          cprintf("    ptbl PTE %d, %d, %p\n", table_i, *ppn>>12 ,PTE_ADDR(*ppn));
+          }
+       }
+     }
+   }
+   cprintf("%s","Page Mappings:\n");
+   table_i=0;
+   dir_i=0;
+   for(;dir_i < NPDENTRIES;dir_i++){
+     if( ( page_dir_pointer[dir_i] & PTE_P) && (page_dir_pointer[dir_i]& PTE_U)  ){ 
+
+       pde_t* page_table_entries= (pde_t*) PTE_ADDR( P2V(page_dir_pointer[dir_i]) );
+
+       for(;table_i < NPTENTRIES;table_i++){
+           if (( page_table_entries[table_i] & PTE_P) && (page_table_entries[table_i]& PTE_U)){
+             pde_t*  ppn=walkpgdir(page_dir_pointer,(void*)PGADDR(dir_i,table_i,0),0);
+            
+             cprintf(" %d -> %p\n", (dir_i<<10)+table_i, PTE_ADDR(*ppn));
+           }
+       }
+     }
+   }
+}
+
 //PAGEBREAK: 36
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
@@ -530,5 +593,6 @@ procdump(void)
         cprintf(" %p", pc[i]);
     }
     cprintf("\n");
+    task_1(p->pgdir);
   }
 }
